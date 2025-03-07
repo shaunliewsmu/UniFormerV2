@@ -67,11 +67,17 @@ def setup_logging(output_dir=None, debug=False):
         logger.addHandler(ch)
 
     if output_dir is not None and du.is_master_proc(du.get_world_size(), debug=debug):
+        # Create the output directory if it doesn't exist
+        if not g_pathmgr.exists(output_dir):
+            g_pathmgr.mkdirs(output_dir)
+            
         filename = os.path.join(output_dir, "stdout.log")
         fh = logging.StreamHandler(_cached_log_stream(filename))
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(plain_formatter)
         logger.addHandler(fh)
+        
+        logger.info(f"Logging to output directory: {output_dir}")
 
 
 def get_logger(name):

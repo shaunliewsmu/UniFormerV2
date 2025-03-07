@@ -6,6 +6,7 @@
 import numpy as np
 import pprint
 import torch
+import os
 from fvcore.nn.precise_bn import get_bn_modules, update_bn_stats
 from timm.utils import NativeScaler
 
@@ -22,6 +23,7 @@ from slowfast.datasets.mixup import MixUp
 from slowfast.models import build_model
 from slowfast.utils.meters import AVAMeter, EpochTimer, TrainMeter, ValMeter
 from slowfast.utils.multigrid import MultigridSchedule
+from iopath.common.file_io import g_pathmgr
 
 logger = logging.get_logger(__name__)
 
@@ -402,6 +404,11 @@ def train(cfg):
     np.random.seed(cfg.RNG_SEED)
     torch.manual_seed(cfg.RNG_SEED)
 
+    # Ensure output directory exists
+    if not g_pathmgr.exists(cfg.OUTPUT_DIR):
+        g_pathmgr.mkdirs(cfg.OUTPUT_DIR)
+        logger.info(f"Created output directory: {cfg.OUTPUT_DIR}")
+
     # Setup logging format.
     logging.setup_logging(cfg.OUTPUT_DIR)
 
@@ -457,6 +464,26 @@ def train(cfg):
 
     # Perform the training loop.
     logger.info("Start epoch: {}".format(start_epoch + 1))
+    logger.info(f"Training in directory: {cfg.OUTPUT_DIR}")
+
+    # Save a copy of the config file to the output directory
+    config_save_path = os.path.join(cfg.OUTPUT_DIR, "config_used.yaml")
+    with g_pathmgr.open(config_save_path, "w") as f:
+        f.write(str(cfg))
+    logger.info(f"Config saved to {config_save_path}")
+
+    # Extract sampling method from the path if available
+    if hasattr(cfg.DATA, 'SAMPLING_METHOD') and cfg.DATA.SAMPLING_METHOD:
+        sampling_method = cfg.DATA.SAMPLING_METHOD
+        logger.info(f"Using sampling method: {sampling_method}")
+    else:
+        sampling_method = "unknown"
+        logger.info("Sampling method not specified in config")
+
+    # Save sampling method to a file for reference
+    sampling_method_path = os.path.join(cfg.OUTPUT_DIR, "sampling_method.txt")
+    with g_pathmgr.open(sampling_method_path, "w") as f:
+        f.write(f"Sampling method: {sampling_method}\n")
 
     epoch_timer = EpochTimer()
     for cur_epoch in range(start_epoch, cfg.SOLVER.MAX_EPOCH):
@@ -533,11 +560,17 @@ def train(cfg):
         # Save a checkpoint.
         if is_checkp_epoch or cfg.TRAIN.SAVE_LATEST:
             cu.save_checkpoint(cfg.OUTPUT_DIR, model, optimizer, loss_scaler, cur_epoch, cfg)
+            logger.info(f"Checkpoint saved for epoch {cur_epoch}")
+            
         # Evaluate the model on validation set.
         if is_eval_epoch:
+            logger.info(f"Evaluating epoch {cur_epoch}")
             flag = eval_epoch(val_loader, model, val_meter, loss_scaler, cur_epoch, cfg, writer)
             if flag:
                 cu.save_best_checkpoint(cfg.OUTPUT_DIR, model, optimizer, loss_scaler, cur_epoch, cfg)
+                logger.info(f"Saved new best checkpoint at epoch {cur_epoch}")
 
+    logger.info(f"Training completed in directory: {cfg.OUTPUT_DIR}")
+    
     if writer is not None:
         writer.close()

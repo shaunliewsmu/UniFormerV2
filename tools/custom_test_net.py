@@ -166,6 +166,10 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
                 plt.title('Receiver Operating Characteristic (ROC)')
                 plt.legend(loc="lower right")
                 
+                # Ensure output directory exists
+                if not g_pathmgr.exists(cfg.OUTPUT_DIR):
+                    g_pathmgr.mkdirs(cfg.OUTPUT_DIR)
+                
                 roc_save_path = os.path.join(cfg.OUTPUT_DIR, 'roc_curve.png')
                 plt.savefig(roc_save_path)
                 logger.info(f"ROC curve saved to {roc_save_path}")
@@ -216,6 +220,10 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
             plt.ylabel('True Label')
             plt.title('Confusion Matrix')
             
+            # Ensure output directory exists
+            if not g_pathmgr.exists(cfg.OUTPUT_DIR):
+                g_pathmgr.mkdirs(cfg.OUTPUT_DIR)
+                
             cm_save_path = os.path.join(cfg.OUTPUT_DIR, 'confusion_matrix.png')
             plt.savefig(cm_save_path)
             logger.info(f"Confusion matrix saved to {cm_save_path}")
@@ -251,6 +259,11 @@ def test(cfg):
     # Set random seed from configs.
     np.random.seed(cfg.RNG_SEED)
     torch.manual_seed(cfg.RNG_SEED)
+
+    # Ensure output directory exists
+    if not g_pathmgr.exists(cfg.OUTPUT_DIR):
+        g_pathmgr.mkdirs(cfg.OUTPUT_DIR)
+        logger.info(f"Created output directory: {cfg.OUTPUT_DIR}")
 
     # Setup logging format.
     logging.setup_logging(cfg.OUTPUT_DIR)
@@ -306,6 +319,7 @@ def test(cfg):
 
     # Save predictions for further analysis
     file_name = f'{cfg.DATA.NUM_FRAMES}x{cfg.DATA.TEST_CROP_SIZE}x{cfg.TEST.NUM_ENSEMBLE_VIEWS}x{cfg.TEST.NUM_SPATIAL_CROPS}.pkl'
+    
     with g_pathmgr.open(os.path.join(
         cfg.OUTPUT_DIR, file_name),
         'wb'
@@ -315,6 +329,8 @@ def test(cfg):
             'video_labels': test_meter.video_labels.cpu().numpy()
         }
         pickle.dump(result, f)
+        
+    logger.info(f"Results saved to {os.path.join(cfg.OUTPUT_DIR, file_name)}")
 
 
 if __name__ == "__main__":
