@@ -15,7 +15,7 @@ import slowfast.utils.logging as logging
 logger = logging.get_logger(__name__)
 
 
-MODEL_PATH = '/mnt/lustre/share_data/likunchang/model'
+MODEL_PATH = 'models'
 _MODELS = {
     "ViT-B/16": os.path.join(MODEL_PATH, "vit_b16.pth"),
     "ViT-L/14": os.path.join(MODEL_PATH, "vit_l14.pth"),
