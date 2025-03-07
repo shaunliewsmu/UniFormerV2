@@ -82,6 +82,13 @@ class Kinetics_sparse(torch.utils.data.Dataset):
         self.use_temporal_gradient = False
         self.temporal_gradient_rate = 0.0
 
+        if hasattr(cfg.DATA, 'SAMPLING_METHOD'):
+            self.sampling_method = cfg.DATA.SAMPLING_METHOD
+            logger.info(f"Using sampling method: {self.sampling_method} for {mode} mode")
+        else:
+            self.sampling_method = "uniform"
+            logger.info(f"No sampling method specified, using default: {self.sampling_method}")
+        
         if self.mode == "train" and self.cfg.AUG.ENABLE:
             self.aug = True
             if self.cfg.AUG.RE_PROB > 0:
@@ -245,18 +252,19 @@ class Kinetics_sparse(torch.utils.data.Dataset):
 
             # Decode video. Meta info is used to perform selective decoding.
             frames = decoder.decode(
-                video_container,
-                sampling_rate,
-                self.cfg.DATA.NUM_FRAMES,
-                temporal_sample_index,
-                self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
-                video_meta=self._video_meta[index],
-                target_fps=self.cfg.DATA.TARGET_FPS,
-                backend=self.cfg.DATA.DECODING_BACKEND,
-                max_spatial_scale=min_scale,
-                use_offset=self.cfg.DATA.USE_OFFSET_SAMPLING,
-                sparse=True
-            )
+                    video_container,
+                    sampling_rate,
+                    self.cfg.DATA.NUM_FRAMES,
+                    temporal_sample_index,
+                    self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
+                    video_meta=self._video_meta[index],
+                    target_fps=self.cfg.DATA.TARGET_FPS,
+                    backend=self.cfg.DATA.DECODING_BACKEND,
+                    max_spatial_scale=min_scale,
+                    use_offset=self.cfg.DATA.USE_OFFSET_SAMPLING,
+                    sparse=True,
+                    sampling_method=self.cfg.DATA.SAMPLING_METHOD if hasattr(self.cfg.DATA, "SAMPLING_METHOD") else "uniform"
+                )
 
             # If decoding failed (wrong format, video is too short, and etc),
             # select another video.
@@ -271,6 +279,32 @@ class Kinetics_sparse(torch.utils.data.Dataset):
                     index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
 
+            # After successfully decoding frames
+            # Save visualization for the first few videos in each epoch
+            if index < 3:  # Only visualize first 3 videos to avoid too many images
+                # Import the necessary modules
+                import os
+                from slowfast.utils.visualization import visualize_sampled_frames
+                
+                # Create output directory if it doesn't exist
+                output_dir = os.path.join(os.path.dirname(self.cfg.OUTPUT_DIR), "sampled_frames")
+                
+                # Convert frames to numpy for visualization
+                # No need to permute as visualization function will handle format conversion
+                frames_for_vis = frames[0].cpu().numpy() if isinstance(frames, list) else frames.cpu().numpy()
+                
+                # Call visualization function
+                try:
+                    vis_path = visualize_sampled_frames(
+                        frames_for_vis,
+                        self._path_to_videos[index],
+                        output_dir,
+                        getattr(self.cfg.DATA, 'SAMPLING_METHOD', 'uniform')
+                    )
+                    logger.info(f"Visualized sampled frames for {self._path_to_videos[index]}: {vis_path}")
+                except Exception as e:
+                    logger.error(f"Failed to visualize frames: {e}")
+            
             if self.aug:
                 if self.cfg.AUG.NUM_SAMPLE > 1:
 

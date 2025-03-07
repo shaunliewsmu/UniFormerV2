@@ -89,11 +89,16 @@ def train_epoch(
                 preds = model(inputs, meta["boxes"])
             else:
                 preds = model(inputs)
+            # Add debugging info
+            print(f"Preds min: {preds.min().item()}, max: {preds.max().item()}, has_nan: {torch.isnan(preds).any().item()}")
+            print(f"Labels: {labels}, has_nan: {torch.isnan(labels).any().item()}")
+            
             # Explicitly declare reduction to mean.
             loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
 
             # Compute the loss.
             loss = loss_fun(preds, labels)
+            print(f"Loss: {loss.item()}, is_nan: {torch.isnan(loss).item()}")
 
         # check Nan Loss.
         misc.check_nan_losses(loss)

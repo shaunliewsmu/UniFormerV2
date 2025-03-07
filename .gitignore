@@ -16,6 +16,9 @@ phoenix-slurm*
 # C extensions
 *.so
 
+models
+exp/custom_referral/custom_b16_f8x224/output
+sampled_frames
 # Distribution / packaging
 .Python
 build/

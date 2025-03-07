@@ -69,6 +69,125 @@ def get_start_end_idx(
     return start_idx, end_idx
 
 
+# Add our new function for frame sampling methods
+def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', clip_idx=-1, num_clips=1):
+    """
+    Get frame indices based on sampling method, handling cases with fewer frames than requested.
+    
+    Args:
+        total_frames (int): Total number of frames in the video
+        num_frames (int): Number of frames to sample
+        sampling_method (str): 'uniform', 'random', or 'random_window'
+        clip_idx (int): Clip index for test-time sampling
+        num_clips (int): Total number of clips to sample
+            
+    Returns:
+        list: Frame indices to sample
+    """
+    # For videos with enough frames, use standard sampling
+    if total_frames >= num_frames:
+        if sampling_method == 'random':
+            # For testing mode, we need deterministic sampling based on clip_idx
+            if clip_idx >= 0:
+                # Set random seed based on clip_idx for reproducibility
+                random.seed(42 + clip_idx)
+                # Sample a subset of frames based on clip_idx
+                segment_size = total_frames / num_clips
+                start_idx = int(segment_size * clip_idx)
+                end_idx = int(segment_size * (clip_idx + 1))
+                # Ensure the range is valid
+                end_idx = min(end_idx, total_frames)
+                candidate_frames = list(range(start_idx, end_idx))
+                # If we don't have enough frames in this segment, sample with replacement
+                if len(candidate_frames) < num_frames:
+                    indices = sorted(random.choices(candidate_frames, k=num_frames))
+                else:
+                    indices = sorted(random.sample(candidate_frames, num_frames))
+            else:
+                # Random sampling without replacement
+                indices = sorted(random.sample(range(total_frames), num_frames))
+                
+        elif sampling_method == 'random_window':
+            # Random window sampling
+            window_size = total_frames / num_frames
+            indices = []
+            
+            # For testing mode with specific clip_idx
+            if clip_idx >= 0:
+                random.seed(42 + clip_idx)
+                offset = (total_frames - num_frames * window_size) * clip_idx / num_clips
+            else:
+                offset = 0
+                
+            for i in range(num_frames):
+                start = int(offset + i * window_size)
+                end = int(offset + (i + 1) * window_size)
+                end = min(end, total_frames)
+                end = max(end, start + 1)  # Ensure window has at least 1 frame
+                frame_idx = random.randint(start, end - 1)
+                indices.append(frame_idx)
+                
+        else:  # Default to uniform sampling
+            if num_frames == 1:
+                # For a single frame, select based on clip_idx
+                if clip_idx >= 0:
+                    segment_size = total_frames / num_clips
+                    indices = [min(int((clip_idx + 0.5) * segment_size), total_frames - 1)]
+                else:
+                    indices = [total_frames // 2]  # Middle frame
+            else:
+                # Get start and end indices based on clip_idx
+                if clip_idx >= 0:
+                    segment_size = total_frames / num_clips
+                    start_idx = int(segment_size * clip_idx)
+                    end_idx = int(segment_size * (clip_idx + 1)) - 1
+                    # Ensure valid range
+                    end_idx = min(end_idx, total_frames - 1)
+                else:
+                    start_idx = 0
+                    end_idx = total_frames - 1
+                    
+                # Sample frames uniformly
+                step = (end_idx - start_idx) / (num_frames - 1) if num_frames > 1 else 0
+                indices = [min(int(start_idx + i * step), total_frames - 1) for i in range(num_frames)]
+    
+    # For videos with fewer frames than requested, handle accordingly
+    else:
+        if sampling_method == 'random':
+            # With fewer frames, we'll need to allow duplicates
+            if clip_idx >= 0:
+                random.seed(42 + clip_idx)
+            indices = sorted(random.choices(range(total_frames), k=num_frames))
+            
+        elif sampling_method == 'random_window':
+            # For random window with fewer frames, create virtual windows smaller than 1 frame
+            indices = []
+            window_size = total_frames / num_frames  # Will be < 1
+            
+            if clip_idx >= 0:
+                random.seed(42 + clip_idx)
+                
+            for i in range(num_frames):
+                # Calculate virtual window boundaries
+                virtual_start = i * window_size
+                virtual_end = (i + 1) * window_size
+                
+                # Convert to actual frame indices with potential duplicates
+                actual_index = min(int(np.floor(virtual_start + (virtual_end - virtual_start) * random.random())), 
+                                  total_frames - 1)
+                indices.append(actual_index)
+                
+        else:  # Uniform sampling
+            if num_frames == 1:
+                indices = [total_frames // 2]  # Middle frame
+            else:
+                # Create evenly spaced indices that might include duplicates
+                step = total_frames / num_frames
+                indices = [min(int(i * step), total_frames - 1) for i in range(num_frames)]
+    
+    return indices
+
+
 def get_seq_frames(video_size, num_frames, clip_idx, num_clips, start_index=0, max_frame=-1):
     seg_size = max(0., float(video_size - 1) / num_frames)
     if max_frame == -1:
@@ -337,7 +456,8 @@ def decode(
     use_offset=False,
     sparse=False,
     total_frames=None,
-    start_index=0
+    start_index=0,
+    sampling_method="uniform"  # Add this parameter
 ):
     """
     Decode the video and perform temporal sampling.
@@ -351,7 +471,7 @@ def decode(
             video to num_clips clips, and select the
             clip_idx-th video clip.
         num_clips (int): overall number of clips to uniformly
-            sample from the given video.
+            sample from the given video for testing.
         video_meta (dict): a dict contains VideoMetaData. Details can be find
             at `pytorch/vision/torchvision/io/_video_opt.py`.
         target_fps (int): the input video may have different fps, convert it to
@@ -361,6 +481,8 @@ def decode(
         max_spatial_scale (int): keep the aspect ratio and resize the frame so
             that shorter edge size is max_spatial_scale. Only used in
             `torchvision` backend.
+        sparse (bool): if True, use sparse sampling.
+        sampling_method (str): frame sampling method ('uniform', 'random', or 'random_window').
     Returns:
         frames (tensor): decoded frames from the video.
     """
@@ -421,13 +543,25 @@ def decode(
         frames = temporal_sampling(frames, start_idx, end_idx, num_frames)
     elif backend == "decord":
         if sparse:
-            if total_frames:
-                seq = get_seq_frames(
-                    total_frames, num_frames, clip_idx, num_clips, 
-                    start_index, max_frame=len(frames)-1
+            # Use our custom sampling method if specified
+            if sampling_method in ["uniform", "random", "random_window"]:
+                # Use get_sampling_indices function with the specified sampling method
+                seq = get_sampling_indices(
+                    total_frames if total_frames else len(frames),
+                    num_frames,
+                    sampling_method,
+                    clip_idx,
+                    num_clips
                 )
             else:
-                seq = get_seq_frames(len(frames), num_frames, clip_idx, num_clips)
+                # Fall back to original get_seq_frames function
+                if total_frames:
+                    seq = get_seq_frames(
+                        total_frames, num_frames, clip_idx, num_clips, 
+                        start_index, max_frame=len(frames)-1
+                    )
+                else:
+                    seq = get_seq_frames(len(frames), num_frames, clip_idx, num_clips)
             frames = frames.get_batch(seq)
         else:
             clip_sz = sampling_rate * num_frames
@@ -443,4 +577,36 @@ def decode(
             # tmp_frames = [frames[i.item()] for i in index]
             frames = frames.get_batch(index)
             # frames = torch.stack(tmp_frames)
+       
+    # Check for NaN values in frames and try to fix them
+    if frames is not None:
+        if backend == "decord":
+            try:
+                # For decord backend
+                if torch.is_tensor(frames):
+                    if torch.isnan(frames.float()).any():
+                        print(f"Warning: NaN values detected in frames. Attempting to fix...")
+                        nan_mask = torch.isnan(frames)
+                        if nan_mask.any():
+                            frames[nan_mask] = 0.0
+                else:
+                    # If frames is not a tensor, it might be a decord array
+                    frames_tensor = torch.from_numpy(frames.asnumpy())
+                    if torch.isnan(frames_tensor).any():
+                        print(f"Warning: NaN values detected in frames. Attempting to fix...")
+                        # Convert to numpy, fix NaNs, and convert back
+                        frames_np = frames.asnumpy()
+                        frames_np = np.nan_to_num(frames_np)
+                        # This depends on how you need to return the frames
+                        frames = frames_np
+            except Exception as e:
+                print(f"Error checking for NaNs in decord frames: {e}")
+        else:
+            # For PyAV and torchvision backends where frames is a tensor
+            try:
+                if torch.isnan(frames).any():
+                    print(f"Warning: NaN values detected in frames. Attempting to fix...")
+                    frames = torch.nan_to_num(frames)
+            except Exception as e:
+                print(f"Error checking for NaNs in frames tensor: {e}")
     return frames

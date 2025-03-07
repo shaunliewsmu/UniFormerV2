@@ -15,7 +15,7 @@ filelock==3.17.0
 fonttools==4.56.0
 fsspec==2025.2.0
 ftfy==6.3.1
-fvcore==0.1.6
+fvcore
 grpcio==1.70.0
 huggingface-hub==0.29.1
 idna==3.10
@@ -83,11 +83,11 @@ scipy==1.15.2
 seaborn==0.13.2
 simplejson==3.20.1
 six==1.17.0
--e git+https://github.com/OpenGVLab/UniFormerV2.git@722a43440fc5b9662cc2a8f23b86caa205e45ebc#egg=slowfast
+-e git+https://github.com/shaunliewsmu/UniFormerV2.git@722a43440fc5b9662cc2a8f23b86caa205e45ebc#egg=slowfast
 stack-data==0.6.3
 sympy==1.13.1
 tabulate==0.9.0
-tensorboard==2.19.0
+tensorboard
 tensorboard-data-server==0.7.2
 termcolor==2.5.0
 threadpoolctl==3.5.0

@@ -640,6 +640,9 @@ _C.DATA.PATH_PREFIX = ""
 # The list of video path prefix if any.
 _C.DATA.PATH_PREFIX_LIST = [""]
 
+# Add this line to the existing DATA section:
+_C.DATA.SAMPLING_METHOD = "uniform"  # Options: "uniform", "random", "random_window"
+
 # Label file path template.
 _C.DATA.LABEL_PATH_TEMPLATE = "somesomev1_rgb_{}_split.txt"
 

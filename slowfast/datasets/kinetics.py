@@ -237,17 +237,18 @@ class Kinetics(torch.utils.data.Dataset):
 
             # Decode video. Meta info is used to perform selective decoding.
             frames = decoder.decode(
-                video_container,
-                sampling_rate,
-                self.cfg.DATA.NUM_FRAMES,
-                temporal_sample_index,
-                self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
-                video_meta=self._video_meta[index],
-                target_fps=self.cfg.DATA.TARGET_FPS,
-                backend=self.cfg.DATA.DECODING_BACKEND,
-                max_spatial_scale=min_scale,
-                use_offset=self.cfg.DATA.USE_OFFSET_SAMPLING,
-            )
+                    video_container,
+                    sampling_rate,
+                    self.cfg.DATA.NUM_FRAMES,
+                    temporal_sample_index,
+                    self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
+                    video_meta=self._video_meta[index],
+                    target_fps=self.cfg.DATA.TARGET_FPS,
+                    backend=self.cfg.DATA.DECODING_BACKEND,
+                    max_spatial_scale=min_scale,
+                    use_offset=self.cfg.DATA.USE_OFFSET_SAMPLING,
+                    sampling_method=self.cfg.DATA.SAMPLING_METHOD if hasattr(self.cfg.DATA, "SAMPLING_METHOD") else "uniform"
+                )
 
             # If decoding failed (wrong format, video is too short, and etc),
             # select another video.

@@ -2,7 +2,7 @@ import os
 import csv
 
 # Define paths and labels
-base_path = "data/laryngeal_dataset_balanced/dataset"  # Update this to your actual base path if different
+base_path = "data/duhs-gss-split-5:v0/organized_dataset"  # Update this to your actual base path if different
 splits = ["train", "val", "test"]
 classes = {"non_referral": 0, "referral": 1}
 

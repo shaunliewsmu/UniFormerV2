@@ -10,7 +10,8 @@ python3 tools/custom_test_net.py \
   --init_method tcp://localhost:10125 \
   --cfg $work_path/config.yaml \
   DATA.PATH_TO_DATA_DIR ./data_list/custom_referral \
-  DATA.PATH_PREFIX data/laryngeal_dataset_balanced/dataset \
+  DATA.PATH_PREFIX data/duhs-gss-split-5:v0/organized_dataset \
+  DATA.SAMPLING_METHOD "random" \
   DATA.PATH_LABEL_SEPARATOR " " \
   TRAIN.ENABLE False \
   TEST.ENABLE True \

@@ -106,5 +106,9 @@ class Uniformerv2(nn.Module):
     def forward(self, x):
         x = x[0]
         output = self.backbone(x)
-
+         # Add check for NaNs
+        if torch.isnan(output).any():
+            print("NaN detected in model output!")
+            # Try to replace NaNs with zeros
+            output = torch.nan_to_num(output)
         return output
