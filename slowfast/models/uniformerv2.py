@@ -66,7 +66,7 @@ class Uniformerv2(nn.Module):
         if cfg.UNIFORMERV2.PRETRAIN != '':
             # Load Kineti-700 pretrained model
             logger.info(f'load model from {cfg.UNIFORMERV2.PRETRAIN}')
-            state_dict = torch.load(cfg.UNIFORMERV2.PRETRAIN, map_location='cpu')
+            state_dict = torch.load(cfg.UNIFORMERV2.PRETRAIN, map_location='cpu', weights_only=False)
             if cfg.UNIFORMERV2.DELETE_SPECIAL_HEAD and state_dict['backbone.transformer.proj.2.weight'].shape[0] != num_classes:
                 logger.info('Delete FC')
                 del state_dict['backbone.transformer.proj.2.weight']
