@@ -2,12 +2,12 @@ import os
 import csv
 
 # Define paths and labels
-base_path = "data/duhs-gss-split-5:v0/organized_dataset"  # Update this to your actual base path if different
+base_path = "data/combined-dataset-imbalanced"  # Update this to your actual base path if different
 splits = ["train", "val", "test"]
 classes = {"non_referral": 0, "referral": 1}
 
 # Path to save CSV files
-output_dir = "data_list/custom_referral"
+output_dir = "data_list/duke-and-bagls"
 os.makedirs(output_dir, exist_ok=True)
 
 # Process each split
