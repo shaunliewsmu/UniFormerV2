@@ -5,8 +5,20 @@ NUM_SHARDS=1
 NUM_GPUS=2  # Set to 0 for non-distributed training
 BATCH_SIZE=8
 SAMPLING_METHOD="uniform"
-FOCAL_ALPHA=0.5  # Default focal loss alpha (can be overridden)
-FOCAL_GAMMA=2.5   # Default focal loss gamma (can be overridden)
+
+FOCAL_ALPHA=1.0  # Default focal loss alpha (can be overridden)
+FOCAL_GAMMA=4.0   # Default focal loss gamma (can be overridden)
+# above alpha and gamma for bagls dataset
+# FOCAL_ALPHA=0.25  # Default focal loss alpha
+# FOCAL_GAMMA=2.0   # Default focal loss gamma 
+#above alpha and gamma for duke dataset
+
+DATALIST_PATH="./data_list/bagls-split"  # Path to the data list
+DATASET_PATH="data/bagls-split:v0/dataset"  # Path to the dataset
+# DATALIST_PATH="./data_list/balanced-duke-using-duke"  # Path to the data list
+# DATASET_PATH="data/balanced-dataset"  # Path to the dataset
+# DATALIST_PATH="./data_list/custom_referral"  # Path to the data list
+# DATASET_PATH="data/duhs-gss-split-5:v0/organized_dataset"  # Path to the dataset
 
 # Accept command line arguments to override defaults
 while [[ $# -gt 0 ]]; do
@@ -44,8 +56,8 @@ PYTHONPATH=$PYTHONPATH:./slowfast \
 python3 tools/run_net.py \
   --cfg $work_path/config.yaml \
   --num_shards $NUM_SHARDS \
-  DATA.PATH_TO_DATA_DIR ./data_list/custom_referral \
-  DATA.PATH_PREFIX data/duhs-gss-split-5:v0/organized_dataset \
+  DATA.PATH_TO_DATA_DIR ${DATALIST_PATH} \
+  DATA.PATH_PREFIX ${DATASET_PATH} \
   DATA.SAMPLING_METHOD ${SAMPLING_METHOD} \
   DATA.PATH_LABEL_SEPARATOR " " \
   TRAIN.EVAL_PERIOD 1 \
