@@ -152,6 +152,16 @@ _C.TEST.BATCH_SIZE = 8
 # Path to the checkpoint to load the initial weight.
 _C.TEST.CHECKPOINT_FILE_PATH = ""
 
+# First, create the TEST.METRICS node (this must be done as a separate step)
+_C.TEST.METRICS = CfgNode()
+
+# Only after initializing the node can you set attributes on it
+_C.TEST.METRICS.AUROC = True
+_C.TEST.METRICS.AUPRC = True
+_C.TEST.METRICS.F1 = True
+_C.TEST.METRICS.BALANCED_ACC = True
+_C.TEST.METRICS.USE_BALANCED_METRICS = True
+
 # Number of clips to sample from a video uniformly for aggregating the
 # prediction results.
 _C.TEST.NUM_ENSEMBLE_VIEWS = 10
@@ -287,6 +297,25 @@ _C.MODEL.NUM_CLASSES_LIST = [400, 600, 700]
 
 # Loss function.
 _C.MODEL.LOSS_FUNC = "cross_entropy"
+
+# Add a dedicated section for focal loss configuration
+_C.MODEL.FOCAL_LOSS = CfgNode()
+
+# Alpha parameter for focal loss (weight for positive class in binary classification)
+# Default value is 0.25 (standard for focal loss)
+_C.MODEL.FOCAL_LOSS.ALPHA = 0.25
+
+# Gamma parameter for focal loss (focusing parameter)
+# Higher gamma means more focus on hard examples
+# Default value is 2.0 (standard for focal loss)
+_C.MODEL.FOCAL_LOSS.GAMMA = 2.0
+
+# Enable or disable focal loss
+# When enabled, _C.MODEL.LOSS_FUNC will be automatically set to "focal_loss"
+_C.MODEL.FOCAL_LOSS.ENABLE = False
+
+# Auto-adjust alpha based on class distribution
+_C.MODEL.FOCAL_LOSS.AUTO_ALPHA = False
 
 # Model architectures that has one single pathway.
 _C.MODEL.SINGLE_PATHWAY_ARCH = ["2d", "c2d", "i3d", "slow", "x3d", "mvit", "uniformer", "uniformerv2"]

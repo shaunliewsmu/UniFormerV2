@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
-
 """Multi-view test a video classification model with additional metrics."""
 
 import numpy as np
 import os
 import pickle
 import torch
+import json
 from iopath.common.file_io import g_pathmgr
-from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score, roc_curve
+from sklearn.metrics import (confusion_matrix, f1_score, roc_auc_score, roc_curve, 
+                            average_precision_score, precision_recall_curve, 
+                            accuracy_score, recall_score, precision_score)
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -24,6 +25,50 @@ from slowfast.config.defaults import get_cfg, assert_and_infer_cfg
 import argparse
 
 logger = logging.get_logger(__name__)
+
+
+def calculate_metrics(all_labels, all_preds, all_scores=None):
+    """
+    Calculate comprehensive metrics for classification.
+    
+    Args:
+        all_labels (array): Ground truth labels
+        all_preds (array): Predicted class indices
+        all_scores (array): Prediction scores/probabilities for positive class
+        
+    Returns:
+        dict: Dictionary of metrics
+    """
+    metrics = {}
+    
+    # Calculate standard metrics
+    metrics['accuracy'] = accuracy_score(all_labels, all_preds)
+    metrics['precision'] = precision_score(all_labels, all_preds, zero_division=0)
+    metrics['recall'] = recall_score(all_labels, all_preds, zero_division=0)
+    metrics['f1'] = f1_score(all_labels, all_preds, zero_division=0)
+    
+    # Calculate ROC-AUC if we have probability scores for binary classification
+    if len(np.unique(all_labels)) == 2 and all_scores is not None:
+        metrics['auroc'] = roc_auc_score(all_labels, all_scores)
+        metrics['auprc'] = average_precision_score(all_labels, all_scores)
+        
+        # Calculate confusion matrix for binary classification
+        cm = confusion_matrix(all_labels, all_preds)
+        if cm.shape == (2, 2):
+            tn, fp, fn, tp = cm.ravel()
+            metrics['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+            metrics['balanced_accuracy'] = (metrics['recall'] + metrics['specificity']) / 2.0
+            
+            # Calculate diversity (how evenly distributed predictions are)
+            total = tn + fp + fn + tp
+            neg_pred_ratio = (tn + fn) / total if total > 0 else 0
+            pos_pred_ratio = (tp + fp) / total if total > 0 else 0
+            # Entropy based diversity - maximum when equal distribution
+            epsilon = 1e-10  # Small value to avoid log(0)
+            metrics['diversity'] = -(neg_pred_ratio * np.log2(neg_pred_ratio + epsilon) + 
+                                    pos_pred_ratio * np.log2(pos_pred_ratio + epsilon))
+    
+    return metrics
 
 
 @torch.no_grad()
@@ -144,40 +189,64 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
             # Convert predictions to class labels
             pred_classes = all_preds_numpy.argmax(axis=1)
             
-            # Calculate F1 score
-            f1 = f1_score(all_labels_numpy, pred_classes)
-            logger.info(f"F1 Score: {f1:.4f}")
+            # Get probability scores for calculating AUROC and AUPRC
+            pos_scores = all_preds_numpy[:, 1]  # Probability of positive class
             
-            # Calculate ROC-AUC
-            try:
-                # Use the probability of the positive class for ROC curve
-                roc_auc = roc_auc_score(all_labels_numpy, all_preds_numpy[:, 1])
-                logger.info(f"ROC-AUC Score: {roc_auc:.4f}")
-                
-                # Plot ROC curve and save it
-                fpr, tpr, _ = roc_curve(all_labels_numpy, all_preds_numpy[:, 1])
-                plt.figure(figsize=(8, 6))
-                plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.4f})')
-                plt.plot([0, 1], [0, 1], 'k--')
-                plt.xlim([0.0, 1.0])
-                plt.ylim([0.0, 1.05])
-                plt.xlabel('False Positive Rate')
-                plt.ylabel('True Positive Rate')
-                plt.title('Receiver Operating Characteristic (ROC)')
-                plt.legend(loc="lower right")
-                
-                # Ensure output directory exists
-                if not g_pathmgr.exists(cfg.OUTPUT_DIR):
-                    g_pathmgr.mkdirs(cfg.OUTPUT_DIR)
-                
-                roc_save_path = os.path.join(cfg.OUTPUT_DIR, 'roc_curve.png')
-                plt.savefig(roc_save_path)
-                logger.info(f"ROC curve saved to {roc_save_path}")
-                plt.close()
-                
-            except ValueError as e:
-                logger.warning(f"Could not calculate ROC-AUC: {e}")
-                roc_auc = None
+            # Calculate comprehensive metrics
+            metrics = calculate_metrics(all_labels_numpy, pred_classes, pos_scores)
+            
+            # Log all metrics
+            logger.info(f"Accuracy: {metrics['accuracy']:.4f}")
+            logger.info(f"Precision: {metrics['precision']:.4f}")
+            logger.info(f"Recall/Sensitivity: {metrics['recall']:.4f}")
+            logger.info(f"Specificity: {metrics.get('specificity', 0):.4f}")
+            logger.info(f"F1 Score: {metrics['f1']:.4f}")
+            logger.info(f"Balanced Accuracy: {metrics.get('balanced_accuracy', 0):.4f}")
+            logger.info(f"AUROC: {metrics.get('auroc', 0):.4f}")
+            logger.info(f"AUPRC: {metrics.get('auprc', 0):.4f}")
+            logger.info(f"Diversity Score: {metrics.get('diversity', 0):.4f}")
+            
+            # Plot ROC curve
+            fpr, tpr, _ = roc_curve(all_labels_numpy, pos_scores)
+            plt.figure(figsize=(8, 6))
+            plt.plot(fpr, tpr, label=f'ROC curve (area = {metrics["auroc"]:.4f})')
+            plt.plot([0, 1], [0, 1], 'k--')
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title('Receiver Operating Characteristic (ROC)')
+            plt.legend(loc="lower right")
+            
+            # Ensure output directory exists
+            if not g_pathmgr.exists(cfg.OUTPUT_DIR):
+                g_pathmgr.mkdirs(cfg.OUTPUT_DIR)
+            
+            roc_save_path = os.path.join(cfg.OUTPUT_DIR, 'roc_curve.png')
+            plt.savefig(roc_save_path)
+            logger.info(f"ROC curve saved to {roc_save_path}")
+            plt.close()
+            
+            # Plot PR curve
+            precision, recall, _ = precision_recall_curve(all_labels_numpy, pos_scores)
+            plt.figure(figsize=(8, 6))
+            
+            # Calculate no skill line (baseline)
+            no_skill = np.sum(all_labels_numpy) / len(all_labels_numpy)
+            
+            plt.plot(recall, precision, label=f'PR curve (AP = {metrics["auprc"]:.4f})')
+            plt.plot([0, 1], [no_skill, no_skill], 'k--', label=f'No Skill ({no_skill:.3f})')
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('Recall')
+            plt.ylabel('Precision')
+            plt.title('Precision-Recall Curve')
+            plt.legend(loc="best")
+            
+            pr_save_path = os.path.join(cfg.OUTPUT_DIR, 'pr_curve.png')
+            plt.savefig(pr_save_path)
+            logger.info(f"PR curve saved to {pr_save_path}")
+            plt.close()
             
             # Create and plot confusion matrix
             cm = confusion_matrix(all_labels_numpy, pred_classes)
@@ -198,12 +267,29 @@ def perform_test(test_loader, model, test_meter, cfg, writer=None):
             metrics_path = os.path.join(cfg.OUTPUT_DIR, 'metrics.txt')
             with open(metrics_path, 'w') as f:
                 f.write(f"Top-1 Accuracy: {top1_acc}\n")
-                f.write(f"F1 Score: {f1:.4f}\n")
-                if roc_auc is not None:
-                    f.write(f"ROC-AUC Score: {roc_auc:.4f}\n")
-                f.write(f"Confusion Matrix:\n")
-                f.write(f"{cm}\n")
+                f.write(f"Accuracy: {metrics['accuracy']:.4f}\n")
+                f.write(f"Precision: {metrics['precision']:.4f}\n")
+                f.write(f"Recall/Sensitivity: {metrics['recall']:.4f}\n")
+                f.write(f"Specificity: {metrics.get('specificity', 0):.4f}\n")
+                f.write(f"F1 Score: {metrics['f1']:.4f}\n")
+                f.write(f"Balanced Accuracy: {metrics.get('balanced_accuracy', 0):.4f}\n")
+                f.write(f"AUROC: {metrics.get('auroc', 0):.4f}\n")
+                f.write(f"AUPRC: {metrics.get('auprc', 0):.4f}\n")
+                f.write(f"Diversity Score: {metrics.get('diversity', 0):.4f}\n")
+                f.write(f"Confusion Matrix:\n{cm}\n")
             logger.info(f"Metrics saved to {metrics_path}")
+            
+            # Save metrics as JSON for programmatic access
+            json_metrics = {k: float(v) if isinstance(v, (np.float32, np.float64)) else v 
+                           for k, v in metrics.items() if k != 'confusion_matrix'}
+            json_metrics['confusion_matrix'] = cm.tolist()
+            json_metrics['top1_acc'] = float(top1_acc)
+            
+            json_path = os.path.join(cfg.OUTPUT_DIR, 'metrics.json')
+            with open(json_path, 'w') as f:
+                json.dump(json_metrics, f, indent=4)
+            logger.info(f"Metrics saved as JSON to {json_path}")
+            
         else:
             # For multi-class classification, calculate macro F1 score
             pred_classes = all_preds_numpy.argmax(axis=1)
@@ -271,6 +357,10 @@ def test(cfg):
     # Print config.
     logger.info("Test with config:")
     logger.info(cfg)
+    
+    # Log focal loss parameters if enabled
+    if hasattr(cfg.MODEL, 'FOCAL_LOSS') and cfg.MODEL.FOCAL_LOSS.ENABLE:
+        logger.info(f"Using Focal Loss with alpha={cfg.MODEL.FOCAL_LOSS.ALPHA}, gamma={cfg.MODEL.FOCAL_LOSS.GAMMA}")
 
     # Build the video model and print model statistics.
     model = build_model(cfg)

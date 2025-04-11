@@ -1,7 +1,7 @@
 TRAIN:
   ENABLE: True
   DATASET: kinetics_sparse
-  BATCH_SIZE: 8
+  BATCH_SIZE: 2
   EVAL_PERIOD: 1
   CHECKPOINT_PERIOD: 5
   AUTO_RESUME: True
@@ -32,12 +32,13 @@ MODEL:
   NUM_CLASSES: 2
   ARCH: uniformerv2
   MODEL_NAME: Uniformerv2
-  LOSS_FUNC: cross_entropy
+  LOSS_FUNC: focal_loss
   DROPOUT_RATE: 0.5
+  USE_CHECKPOINT: True
 TEST:
   ENABLE: True
   DATASET: kinetics_sparse
-  BATCH_SIZE: 64
+  BATCH_SIZE: 16
   NUM_SPATIAL_CROPS: 3
   NUM_ENSEMBLE_VIEWS: 4
 DATA_LOADER:

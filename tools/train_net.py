@@ -7,6 +7,7 @@ import numpy as np
 import pprint
 import torch
 import os
+import json
 from fvcore.nn.precise_bn import get_bn_modules, update_bn_stats
 from timm.utils import NativeScaler
 
@@ -24,8 +25,127 @@ from slowfast.models import build_model
 from slowfast.utils.meters import AVAMeter, EpochTimer, TrainMeter, ValMeter
 from slowfast.utils.multigrid import MultigridSchedule
 from iopath.common.file_io import g_pathmgr
+from sklearn.metrics import (confusion_matrix, f1_score, roc_auc_score,
+                            average_precision_score,precision_score,recall_score, accuracy_score)
 
 logger = logging.get_logger(__name__)
+
+
+def calculate_class_weights(labels):
+    """
+    Calculate class weights inversely proportional to class frequency.
+    
+    Args:
+        labels (torch.Tensor): Training labels
+        
+    Returns:
+        torch.Tensor: Class weights for loss function
+    """
+    import numpy as np
+    
+    # Convert to numpy for easier handling
+    if torch.is_tensor(labels):
+        labels = labels.cpu().numpy()
+    
+    # Count class occurrences    
+    class_counts = np.bincount(labels)
+    
+    # Inverse frequency weighting
+    total_samples = len(labels)
+    class_weights = total_samples / (len(class_counts) * class_counts)
+    
+    # Normalize weights so they sum to 1 * num_classes
+    class_weights = class_weights / class_weights.sum() * len(class_counts)
+    
+    return torch.tensor(class_weights, dtype=torch.float32)
+
+
+def calculate_metrics(all_labels, all_preds, all_scores=None):
+    """
+    Calculate comprehensive metrics for classification.
+    
+    Args:
+        all_labels (array): Ground truth labels
+        all_preds (array): Predicted class indices
+        all_scores (array): Prediction scores/probabilities for positive class
+        
+    Returns:
+        dict: Dictionary of metrics
+    """
+    metrics = {}
+    
+    # Calculate standard metrics
+    metrics['accuracy'] = accuracy_score(all_labels, all_preds)
+    metrics['precision'] = precision_score(all_labels, all_preds, zero_division=0)
+    metrics['recall'] = recall_score(all_labels, all_preds, zero_division=0)
+    metrics['f1'] = f1_score(all_labels, all_preds, zero_division=0)
+    
+    # Calculate ROC-AUC if we have probability scores for binary classification
+    if len(np.unique(all_labels)) == 2 and all_scores is not None:
+        metrics['auroc'] = roc_auc_score(all_labels, all_scores)
+        metrics['auprc'] = average_precision_score(all_labels, all_scores)
+        
+        # Calculate confusion matrix for binary classification
+        cm = confusion_matrix(all_labels, all_preds)
+        if cm.shape == (2, 2):
+            tn, fp, fn, tp = cm.ravel()
+            metrics['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+            metrics['balanced_accuracy'] = (metrics['recall'] + metrics['specificity']) / 2.0
+            
+            # Calculate diversity (how evenly distributed predictions are)
+            total = tn + fp + fn + tp
+            neg_pred_ratio = (tn + fn) / total if total > 0 else 0
+            pos_pred_ratio = (tp + fp) / total if total > 0 else 0
+            # Entropy based diversity - maximum when equal distribution
+            epsilon = 1e-10  # Small value to avoid log(0)
+            metrics['diversity'] = -(neg_pred_ratio * np.log2(neg_pred_ratio + epsilon) + 
+                                    pos_pred_ratio * np.log2(pos_pred_ratio + epsilon))
+    
+    return metrics
+
+
+def should_save_model(val_metrics, best_metrics):
+    """
+    Determine if model should be saved based on a balanced composite score.
+    
+    Args:
+        val_metrics (dict): Current validation metrics
+        best_metrics (dict): Best metrics so far
+        
+    Returns:
+        bool: Whether to save this model
+        float: Composite score
+    """
+    # Check if the model is predicting only one class (specificity or recall is 0)
+    if val_metrics.get('specificity', 1.0) <= 0.01:
+        logger.info(f"Model predicts only one class (specificity: {val_metrics.get('specificity', 0):.4f})")
+        if best_metrics.get('specificity', 0) > 0.01:
+            logger.info("Not saving - previous model had better class balance")
+            return False, 0.0
+    
+    if val_metrics.get('recall', 1.0) <= 0.01:
+        logger.info(f"Model predicts only one class (recall: {val_metrics.get('recall', 0):.4f})")
+        if best_metrics.get('recall', 0) > 0.01:
+            logger.info("Not saving - previous model had better class balance")
+            return False, 0.0
+    
+    # Calculate composite score - weighted average of different metrics
+    current_score = (
+        (0.20 * val_metrics.get('f1', 0)) +              # 20% weight on F1
+        (0.15 * val_metrics.get('auroc', 0)) +           # 15% weight on AUROC
+        (0.15 * val_metrics.get('auprc', 0)) +           # 15% weight on AUPRC
+        (0.25 * val_metrics.get('balanced_accuracy', 0)) + # 25% weight on balanced accuracy
+        (0.25 * val_metrics.get('diversity', 0))         # 25% weight on diversity
+    )
+    
+    best_score = best_metrics.get('composite_score', -float('inf'))
+    
+    # Only save if it's better than the previous best
+    if current_score > best_score:
+        logger.info(f"New best model with composite score: {current_score:.4f} (previous: {best_score:.4f})")
+        return True, current_score
+    
+    return False, current_score
 
 
 def train_epoch(
@@ -91,18 +211,24 @@ def train_epoch(
                 preds = model(inputs, meta["boxes"])
             else:
                 preds = model(inputs)
+                
             # Add debugging info
-            print(f"Preds min: {preds.min().item()}, max: {preds.max().item()}, has_nan: {torch.isnan(preds).any().item()}")
-            print(f"Labels: {labels}, has_nan: {torch.isnan(labels).any().item()}")
+            if cur_iter == 0 or cur_iter % 20 == 0:
+                logger.info(f"Iteration {cur_iter}: Preds min: {preds.min().item()}, "
+                           f"max: {preds.max().item()}, has_nan: {torch.isnan(preds).any().item()}")
+                logger.info(f"Labels: {labels.detach().cpu().numpy()}, "
+                          f"has_nan: {torch.isnan(labels).any().item()}")
             
             # Explicitly declare reduction to mean.
-            loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
+            loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC, cfg)(reduction="mean")
 
             # Compute the loss.
             loss = loss_fun(preds, labels)
-            print(f"Loss: {loss.item()}, is_nan: {torch.isnan(loss).item()}")
+            
+            if cur_iter == 0 or cur_iter % 20 == 0:
+                logger.info(f"Iteration {cur_iter}: Loss: {loss.item()}, is_nan: {torch.isnan(loss).item()}")
 
-        # check Nan Loss.
+        # Check Nan Loss.
         misc.check_nan_losses(loss)
 
         # Perform the backward pass.
@@ -144,7 +270,7 @@ def train_epoch(
                 loss = loss.item()
             else:
                 # Compute the errors.
-                num_topks_correct = metrics.topks_correct(preds, labels, (1, min(5, cfg.MODEL.NUM_CLASSES))) #TODO:change to binary classification
+                num_topks_correct = metrics.topks_correct(preds, labels, (1, min(5, cfg.MODEL.NUM_CLASSES)))
                 top1_err, top5_err = [
                     (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
                 ]
@@ -215,7 +341,7 @@ def eval_epoch(val_loader, model, val_meter, loss_scaler, cur_epoch, cfg, writer
 
     for cur_iter, (inputs, labels, _, meta) in enumerate(val_loader):
         if cfg.NUM_GPUS:
-            # Transferthe data to the current GPU device.
+            # Transfer the data to the current GPU device.
             if isinstance(inputs, (list,)):
                 for i in range(len(inputs)):
                     inputs[i] = inputs[i].cuda(non_blocking=True)
@@ -251,7 +377,11 @@ def eval_epoch(val_loader, model, val_meter, loss_scaler, cur_epoch, cfg, writer
             val_meter.update_stats(preds, ori_boxes, metadata)
 
         else:
-            preds = model(inputs)
+            # Add softmax for evaluation if needed
+            if cfg.TEST.ADD_SOFTMAX:
+                preds = model(inputs).softmax(-1)
+            else:
+                preds = model(inputs)
 
             if cfg.DATA.MULTI_LABEL:
                 if cfg.NUM_GPUS > 1:
@@ -292,29 +422,56 @@ def eval_epoch(val_loader, model, val_meter, loss_scaler, cur_epoch, cfg, writer
         val_meter.log_iter_stats(cur_epoch, cur_iter)
         val_meter.iter_tic()
 
+    # Gather all predictions and labels for computing metrics
+    all_preds = []
+    all_labels = []
+    
+    for pred, label in zip(val_meter.all_preds, val_meter.all_labels):
+        all_preds.append(pred.clone().detach())
+        all_labels.append(label.clone().detach())
+    
+    all_preds = torch.cat(all_preds, dim=0).cpu().numpy()
+    all_labels = torch.cat(all_labels, dim=0).cpu().numpy()
+    
+    # Calculate comprehensive metrics
+    pred_classes = np.argmax(all_preds, axis=1)
+    
+    # Calculate scores for binary classification (positive class probability)
+    if cfg.MODEL.NUM_CLASSES == 2:
+        pos_scores = all_preds[:, 1]
+        metrics_dict = calculate_metrics(all_labels, pred_classes, pos_scores)
+        
+        # Log comprehensive metrics
+        logger.info("\n" + "="*50)
+        logger.info("VALIDATION METRICS:")
+        logger.info("="*50)
+        for key, value in metrics_dict.items():
+            if key != 'confusion_matrix':
+                logger.info(f"{key}: {value:.4f}")
+        
+        # Log confusion matrix
+        if 'confusion_matrix' in metrics_dict:
+            cm = metrics_dict['confusion_matrix']
+            logger.info(f"Confusion Matrix:\n{cm}")
+        
+        # Log to tensorboard
+        if writer is not None:
+            for key, value in metrics_dict.items():
+                if key != 'confusion_matrix' and isinstance(value, (int, float)):
+                    writer.add_scalar(f"Val/{key}", value, global_step=cur_epoch)
+    
     # Log epoch stats.
-    flag = val_meter.log_epoch_stats(cur_epoch)
-
-    # write to tensorboard format if available.
-    if writer is not None:
-        if cfg.DETECTION.ENABLE:
-            writer.add_scalars(
-                {"Val/mAP": val_meter.full_map}, global_step=cur_epoch
-            )
-        else:
-            all_preds = [pred.clone().detach() for pred in val_meter.all_preds]
-            all_labels = [
-                label.clone().detach() for label in val_meter.all_labels
-            ]
-            if cfg.NUM_GPUS:
-                all_preds = [pred.cpu() for pred in all_preds]
-                all_labels = [label.cpu() for label in all_labels]
-            writer.plot_eval(
-                preds=all_preds, labels=all_labels, global_step=cur_epoch
-            )
-
+    val_meter.log_epoch_stats(cur_epoch)
+    
+    # Save comprehensive metrics for model selection
+    metrics_to_return = {}
+    if cfg.MODEL.NUM_CLASSES == 2:
+        metrics_to_return = metrics_dict
+    
+    # Reset the meter for next epoch
     val_meter.reset()
-    return flag
+    
+    return metrics_to_return
 
 
 def calculate_and_update_precise_bn(loader, model, num_iters=200, use_gpu=True):
@@ -363,6 +520,11 @@ def build_trainer(cfg):
     if du.is_master_proc() and cfg.LOG_MODEL_INFO:
         misc.log_model_info(model, cfg, use_train_input=True)
 
+    # Configure loss function - including focal loss support
+    if hasattr(cfg.MODEL, 'FOCAL_LOSS') and cfg.MODEL.FOCAL_LOSS.ENABLE:
+        logger.info(f"Using Focal Loss with alpha={cfg.MODEL.FOCAL_LOSS.ALPHA}, gamma={cfg.MODEL.FOCAL_LOSS.GAMMA}")
+        cfg.MODEL.LOSS_FUNC = "focal_loss"
+    
     # Construct the optimizer.
     optimizer = optim.construct_optimizer(model, cfg)
 
@@ -422,6 +584,14 @@ def train(cfg):
     # Print config.
     logger.info("Train with config:")
     logger.info(pprint.pformat(cfg))
+
+    # Check for focal loss configuration
+    if hasattr(cfg.MODEL, 'FOCAL_LOSS') and cfg.MODEL.FOCAL_LOSS.ENABLE:
+        logger.info(f"Using Focal Loss with alpha={cfg.MODEL.FOCAL_LOSS.ALPHA}, gamma={cfg.MODEL.FOCAL_LOSS.GAMMA}")
+        
+        # Check for auto alpha
+        if hasattr(cfg.MODEL.FOCAL_LOSS, 'AUTO_ALPHA') and cfg.MODEL.FOCAL_LOSS.AUTO_ALPHA:
+            logger.info("Auto Alpha enabled - will calculate optimal alpha from class distribution")
 
     # Loss scaler
     loss_scaler = NativeScaler()
@@ -484,6 +654,22 @@ def train(cfg):
     sampling_method_path = os.path.join(cfg.OUTPUT_DIR, "sampling_method.txt")
     with g_pathmgr.open(sampling_method_path, "w") as f:
         f.write(f"Sampling method: {sampling_method}\n")
+
+    # Initialize dictionary for tracking best metrics
+    best_metrics = {
+        'val_loss': float('inf'),
+        'val_acc': 0.0,
+        'val_auroc': 0.0,
+        'val_auprc': 0.0,
+        'val_f1': 0.0,
+        'val_precision': 0.0,
+        'val_recall': 0.0,
+        'val_specificity': 0.0,
+        'val_balanced_accuracy': 0.0,
+        'val_diversity': 0.0,
+        'composite_score': -float('inf'),
+        'epoch': -1
+    }
 
     epoch_timer = EpochTimer()
     for cur_epoch in range(start_epoch, cfg.SOLVER.MAX_EPOCH):
@@ -558,19 +744,78 @@ def train(cfg):
         _ = misc.aggregate_sub_bn_stats(model)
 
         # Save a checkpoint.
-        if is_checkp_epoch or cfg.TRAIN.SAVE_LATEST:
+        if is_checkp_epoch:
             cu.save_checkpoint(cfg.OUTPUT_DIR, model, optimizer, loss_scaler, cur_epoch, cfg)
-            logger.info(f"Checkpoint saved for epoch {cur_epoch}")
+            logger.info(f"Regular checkpoint saved for epoch {cur_epoch}")
             
         # Evaluate the model on validation set.
         if is_eval_epoch:
             logger.info(f"Evaluating epoch {cur_epoch}")
-            flag = eval_epoch(val_loader, model, val_meter, loss_scaler, cur_epoch, cfg, writer)
-            if flag:
-                cu.save_best_checkpoint(cfg.OUTPUT_DIR, model, optimizer, loss_scaler, cur_epoch, cfg)
-                logger.info(f"Saved new best checkpoint at epoch {cur_epoch}")
+            val_metrics = eval_epoch(val_loader, model, val_meter, loss_scaler, cur_epoch, cfg, writer)
+            
+            # For binary classification, check if we should save the model based on balanced metrics
+            if cfg.MODEL.NUM_CLASSES == 2 and hasattr(cfg.TEST, 'METRICS') and hasattr(cfg.TEST.METRICS, 'USE_BALANCED_METRICS') and cfg.TEST.METRICS.USE_BALANCED_METRICS:
+                # Check if metrics were returned
+                if val_metrics:
+                    save_model, composite_score = should_save_model(val_metrics, best_metrics)
+                    
+                    # Update current metrics with composite score
+                    val_metrics['composite_score'] = composite_score
+                    
+                    if save_model:
+                        best_metrics = val_metrics.copy()
+                        best_metrics['epoch'] = cur_epoch
+                        
+                        # Save as best checkpoint
+                        cu.save_checkpoint(
+                            cfg.OUTPUT_DIR, 
+                            model, 
+                            optimizer, 
+                            loss_scaler, 
+                            cur_epoch, 
+                            cfg
+                        )
+                        logger.info(f"Saved new best model at epoch {cur_epoch} with composite score {composite_score:.4f}")
+                        
+                        # Save best metrics to a file
+                        best_metrics_path = os.path.join(cfg.OUTPUT_DIR, "best_metrics.json")
+                        with open(best_metrics_path, 'w') as f:
+                            # Convert numpy values to Python native types for JSON
+                            best_metrics_json = {k: float(v) if isinstance(v, (np.float32, np.float64)) else v 
+                                               for k, v in best_metrics.items() if k != 'confusion_matrix'}
+                            json.dump(best_metrics_json, f, indent=4)
+                        logger.info(f"Best metrics saved to {best_metrics_path}")
+            else:
+                # Standard model saving logic based on validation loss
+                if val_meter.stats["top1_acc"] > best_metrics['val_acc']:
+                    best_metrics['val_acc'] = val_meter.stats["top1_acc"]
+                    best_metrics['epoch'] = cur_epoch
+                    
+                    # Save as best checkpoint
+                    cu.save_checkpoint(
+                        cfg.OUTPUT_DIR, 
+                        model, 
+                        optimizer, 
+                        loss_scaler, 
+                        cur_epoch, 
+                        cfg
+                    )
+                    logger.info(f"Saved new best model at epoch {cur_epoch} with accuracy {best_metrics['val_acc']:.4f}")
+
+        # Save latest model
+        if cfg.TRAIN.SAVE_LATEST:
+            cu.save_checkpoint(cfg.OUTPUT_DIR, model, optimizer, loss_scaler, cur_epoch, cfg)
+            logger.info(f"Latest checkpoint saved for epoch {cur_epoch}")
 
     logger.info(f"Training completed in directory: {cfg.OUTPUT_DIR}")
+    
+    # Log final best metrics
+    logger.info("\nBest model performance:")
+    logger.info(f"Best epoch: {best_metrics['epoch']}")
+    
+    for key, value in best_metrics.items():
+        if key not in ['epoch', 'confusion_matrix'] and isinstance(value, (int, float, np.number)):
+            logger.info(f"{key}: {value:.4f}")
     
     if writer is not None:
         writer.close()
