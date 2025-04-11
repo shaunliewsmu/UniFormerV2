@@ -5,8 +5,8 @@ NUM_SHARDS=1
 NUM_GPUS=2  # Set to 0 for non-distributed training
 BATCH_SIZE=8
 SAMPLING_METHOD="uniform"
-FOCAL_ALPHA=0.25  # Default focal loss alpha (can be overridden)
-FOCAL_GAMMA=2.0   # Default focal loss gamma (can be overridden)
+FOCAL_ALPHA=0.5  # Default focal loss alpha (can be overridden)
+FOCAL_GAMMA=2.5   # Default focal loss gamma (can be overridden)
 
 # Accept command line arguments to override defaults
 while [[ $# -gt 0 ]]; do
@@ -53,7 +53,7 @@ python3 tools/run_net.py \
   TRAIN.BATCH_SIZE $BATCH_SIZE \
   NUM_GPUS $NUM_GPUS \
   NUM_SHARDS $NUM_SHARDS \
-  SOLVER.MAX_EPOCH 50 \
+  SOLVER.MAX_EPOCH 30 \
   SOLVER.BASE_LR 1e-5 \
   SOLVER.WARMUP_EPOCHS 1 \
   TEST.NUM_ENSEMBLE_VIEWS 4 \

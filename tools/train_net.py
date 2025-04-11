@@ -206,7 +206,7 @@ def train_epoch(
             samples, labels = mixup_fn(inputs[0], labels)
             inputs[0] = samples
 
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             if cfg.DETECTION.ENABLE:
                 preds = model(inputs, meta["boxes"])
             else:
