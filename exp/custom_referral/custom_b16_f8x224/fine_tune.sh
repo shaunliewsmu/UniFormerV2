@@ -7,7 +7,7 @@ BATCH_SIZE=8
 SAMPLING_METHOD="uniform"
 FOCAL_ALPHA=0.25  # Default focal loss alpha
 FOCAL_GAMMA=2.0   # Default focal loss gamma
-PRETRAINED_CHECKPOINT="exp/custom_referral/custom_b16_f8x224/output/run_20250411_120320_uniform_alpha0.5_gamma2.5/checkpoints/checkpoint_epoch_00005.pyth"  # Default empty
+PRETRAINED_CHECKPOINT="exp/custom_referral/custom_b16_f8x224/output/run_20250411_121502_uniform_alpha0.5_gamma2.5/checkpoints/checkpoint_epoch_00005.pyth"  # Default empty
 DELETE_SPECIAL_HEAD=true  # Whether to delete the classification layer when fine-tuning
 
 # Accept command line arguments to override defaults
@@ -64,7 +64,7 @@ python3 tools/run_net.py \
   TRAIN.BATCH_SIZE $BATCH_SIZE \
   NUM_GPUS $NUM_GPUS \
   NUM_SHARDS $NUM_SHARDS \
-  SOLVER.MAX_EPOCH 50 \
+  SOLVER.MAX_EPOCH 5 \
   SOLVER.BASE_LR 1e-5 \
   SOLVER.WARMUP_EPOCHS 1 \
   TEST.NUM_ENSEMBLE_VIEWS 4 \
