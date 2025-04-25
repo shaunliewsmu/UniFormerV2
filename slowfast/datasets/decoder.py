@@ -70,7 +70,7 @@ def get_start_end_idx(
 
 
 # Add our new function for frame sampling methods
-def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', clip_idx=-1, num_clips=1):
+def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', clip_idx=-1, num_clips=1, aug_round=None):
     """
     Get frame indices based on sampling method, handling cases with fewer frames than requested.
     
@@ -80,6 +80,7 @@ def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', cl
         sampling_method (str): 'uniform', 'random', or 'random_window'
         clip_idx (int): Clip index for test-time sampling
         num_clips (int): Total number of clips to sample
+        aug_round (int): Augmentation round for training (None for original sampling)
             
     Returns:
         list: Frame indices to sample
@@ -128,28 +129,69 @@ def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', cl
                 indices.append(frame_idx)
                 
         else:  # Default to uniform sampling
-            if num_frames == 1:
-                # For a single frame, select based on clip_idx
-                if clip_idx >= 0:
-                    segment_size = total_frames / num_clips
-                    indices = [min(int((clip_idx + 0.5) * segment_size), total_frames - 1)]
+            # For augmentation, we modify the uniform sampling
+            if aug_round is not None and aug_round > 0:
+                # Calculate border positions first (these are the same with or without augmentation)
+                if num_frames == 1:
+                    border_indices = [total_frames // 2]  # Middle frame for single frame
                 else:
-                    indices = [total_frames // 2]  # Middle frame
-            else:
-                # Get start and end indices based on clip_idx
-                if clip_idx >= 0:
-                    segment_size = total_frames / num_clips
-                    start_idx = int(segment_size * clip_idx)
-                    end_idx = int(segment_size * (clip_idx + 1)) - 1
-                    # Ensure valid range
-                    end_idx = min(end_idx, total_frames - 1)
-                else:
-                    start_idx = 0
-                    end_idx = total_frames - 1
+                    step = (total_frames - 1) / (num_frames - 1)
+                    border_indices = [min(int(i * step), total_frames - 1) for i in range(num_frames)]
+                
+                # For augmentation, we need to sample frames from each chunk
+                num_chunks = len(border_indices) - 1
+                round_frames = []
+                
+                # For each chunk, select one frame based on the augmentation round
+                for i in range(num_chunks):
+                    chunk_start = border_indices[i]     # Left border
+                    chunk_end = border_indices[i + 1]   # Right border
                     
-                # Sample frames uniformly
-                step = (end_idx - start_idx) / (num_frames - 1) if num_frames > 1 else 0
-                indices = [min(int(start_idx + i * step), total_frames - 1) for i in range(num_frames)]
+                    # Calculate frame index for this round
+                    frame_idx = chunk_start + aug_round
+                    
+                    # Ensure we stay within the chunk (excluding right border)
+                    if frame_idx < chunk_end:
+                        round_frames.append(frame_idx)
+                    else:
+                        # If we run out of frames, use repetition within chunk
+                        available_frames = list(range(chunk_start + 1, chunk_end))
+                        if available_frames:
+                            frame_idx = random.choice(available_frames)
+                            round_frames.append(frame_idx)
+                        else:
+                            # If no frames available, use the left border again
+                            round_frames.append(chunk_start)
+                
+                # Always include the last border for completeness
+                if border_indices:
+                    round_frames.append(border_indices[-1])
+                    
+                indices = sorted(round_frames)
+            else:
+                # Original uniform sampling without augmentation
+                if num_frames == 1:
+                    # For a single frame, select based on clip_idx
+                    if clip_idx >= 0:
+                        segment_size = total_frames / num_clips
+                        indices = [min(int((clip_idx + 0.5) * segment_size), total_frames - 1)]
+                    else:
+                        indices = [total_frames // 2]  # Middle frame
+                else:
+                    # Get start and end indices based on clip_idx
+                    if clip_idx >= 0:
+                        segment_size = total_frames / num_clips
+                        start_idx = int(segment_size * clip_idx)
+                        end_idx = int(segment_size * (clip_idx + 1)) - 1
+                        # Ensure valid range
+                        end_idx = min(end_idx, total_frames - 1)
+                    else:
+                        start_idx = 0
+                        end_idx = total_frames - 1
+                        
+                    # Sample frames uniformly
+                    step = (end_idx - start_idx) / (num_frames - 1) if num_frames > 1 else 0
+                    indices = [min(int(start_idx + i * step), total_frames - 1) for i in range(num_frames)]
     
     # For videos with fewer frames than requested, handle accordingly
     else:
@@ -457,7 +499,8 @@ def decode(
     sparse=False,
     total_frames=None,
     start_index=0,
-    sampling_method="uniform"  # Add this parameter
+    sampling_method="uniform",
+    aug_round=None  # Add augmentation round parameter
 ):
     """
     Decode the video and perform temporal sampling.
@@ -483,6 +526,7 @@ def decode(
             `torchvision` backend.
         sparse (bool): if True, use sparse sampling.
         sampling_method (str): frame sampling method ('uniform', 'random', or 'random_window').
+        aug_round (int): augmentation round for training (None for original sampling).
     Returns:
         frames (tensor): decoded frames from the video.
     """
@@ -543,15 +587,16 @@ def decode(
         frames = temporal_sampling(frames, start_idx, end_idx, num_frames)
     elif backend == "decord":
         if sparse:
-            # Use our custom sampling method if specified
+            # Use our custom sampling method with augmentation support
             if sampling_method in ["uniform", "random", "random_window"]:
-                # Use get_sampling_indices function with the specified sampling method
+                # Use get_sampling_indices function with the specified sampling method and augmentation round
                 seq = get_sampling_indices(
                     total_frames if total_frames else len(frames),
                     num_frames,
                     sampling_method,
                     clip_idx,
-                    num_clips
+                    num_clips,
+                    aug_round
                 )
             else:
                 # Fall back to original get_seq_frames function
@@ -574,9 +619,7 @@ def decode(
             )
             index = torch.linspace(start_idx, end_idx, num_frames)
             index = torch.clamp(index, 0, len(frames) - 1).long()
-            # tmp_frames = [frames[i.item()] for i in index]
             frames = frames.get_batch(index)
-            # frames = torch.stack(tmp_frames)
        
     # Check for NaN values in frames and try to fix them
     if frames is not None:

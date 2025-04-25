@@ -7,6 +7,8 @@ import torch
 import torch.utils.data
 from iopath.common.file_io import g_pathmgr
 from torchvision import transforms
+import math
+import numpy as np
 
 import slowfast.utils.logging as logging
 
@@ -81,14 +83,33 @@ class Kinetics_sparse(torch.utils.data.Dataset):
         self.rand_erase = False
         self.use_temporal_gradient = False
         self.temporal_gradient_rate = 0.0
-
-        if hasattr(cfg.DATA, 'SAMPLING_METHOD'):
-            self.sampling_method = cfg.DATA.SAMPLING_METHOD
-            logger.info(f"Using sampling method: {self.sampling_method} for {mode} mode")
-        else:
-            self.sampling_method = "uniform"
-            logger.info(f"No sampling method specified, using default: {self.sampling_method}")
         
+        # Setup data augmentation parameters
+        self.augmentation_enabled = (
+            cfg.DATA.AUGMENTATION.ENABLE and self.mode == "train"
+        )
+        
+        if self.augmentation_enabled:
+            logger.info("Data augmentation enabled for training")
+            self.sampling_method = cfg.DATA.AUGMENTATION.METHOD
+            self.max_aug_rounds = cfg.DATA.AUGMENTATION.MAX_ROUNDS
+            logger.info(f"Using sampling method: {self.sampling_method}")
+            if self.max_aug_rounds:
+                logger.info(f"Maximum augmentation rounds: {self.max_aug_rounds}")
+            else:
+                logger.info("Maximum augmentation rounds will be auto-calculated based on video length")
+            
+            # Setup data augmentation information for all videos
+            self._setup_augmentation()
+        else:
+            # For regular sampling method (without augmentation)
+            if hasattr(cfg.DATA, 'SAMPLING_METHOD'):
+                self.sampling_method = cfg.DATA.SAMPLING_METHOD
+                logger.info(f"Using sampling method: {self.sampling_method} for {mode} mode")
+            else:
+                self.sampling_method = "uniform"
+                logger.info(f"No sampling method specified, using default: {self.sampling_method}")
+
         if self.mode == "train" and self.cfg.AUG.ENABLE:
             self.aug = True
             if self.cfg.AUG.RE_PROB > 0:
@@ -135,6 +156,141 @@ class Kinetics_sparse(torch.utils.data.Dataset):
             )
         )
 
+    def _setup_augmentation(self):
+        """Initialize augmentation information for all videos in the dataset."""
+        logger.info(f"Setting up data augmentation with {self.sampling_method} sampling method")
+        
+        # Store original dataset length before augmentation
+        self.original_length = len(self._path_to_videos)
+        
+        # Mappings for augmented samples
+        self.aug_video_map = []  # Maps augmented index to (video_idx, aug_round)
+        self.augmented_labels = []  # Store labels for all augmented samples
+        
+        # Process each video to calculate augmentation rounds and store mappings
+        total_augmented_samples = 0
+        
+        # Count samples for each class before augmentation
+        class_counts_before = {}
+        for label in self._labels:
+            class_counts_before[label] = class_counts_before.get(label, 0) + 1
+        
+        # Create augmentation mappings and count augmented samples per class
+        for video_idx, video_path in enumerate(self._path_to_videos):
+            # Get video frame count
+            cap = None
+            try:
+                video_container = container.get_video_container(
+                    video_path,
+                    self.cfg.DATA_LOADER.ENABLE_MULTI_THREAD_DECODE,
+                    self.cfg.DATA.DECODING_BACKEND,
+                )
+                if hasattr(video_container, 'streams') and hasattr(video_container.streams, 'video'):
+                    total_frames = video_container.streams.video[0].frames
+                else:
+                    # For backends that don't provide frame count directly, we need to estimate
+                    total_frames = 300  # Default estimate, can be refined
+            except Exception as e:
+                logger.warning(f"Could not open video {video_path} to get frame count: {e}")
+                total_frames = 300  # Default estimate if we can't open the video
+            
+            # Calculate max augmentation rounds for this video
+            if self.max_aug_rounds is None:
+                video_max_rounds = self._calculate_max_aug_rounds(total_frames, self.cfg.DATA.NUM_FRAMES)
+            else:
+                video_max_rounds = min(self.max_aug_rounds, 
+                                     self._calculate_max_aug_rounds(total_frames, self.cfg.DATA.NUM_FRAMES))
+            
+            # Get the video's label
+            label = self._labels[video_idx]
+            
+            # Add mapping entries for augmented samples
+            for aug_round in range(1, video_max_rounds + 1):
+                self.aug_video_map.append((video_idx, aug_round))
+                self.augmented_labels.append(label)
+                total_augmented_samples += 1
+        
+        # Calculate class counts after augmentation
+        class_counts_after = class_counts_before.copy()
+        for label in self.augmented_labels:
+            class_counts_after[label] = class_counts_after.get(label, 0) + 1
+        
+        # Log augmentation info
+        logger.info(f"Data augmentation added {total_augmented_samples} samples to the original {self.original_length}")
+        
+        # Create class name mapping for nicer output
+        class_names = {0: "non-referral", 1: "referral"}
+        
+        # Calculate and log class distribution before augmentation
+        original_dist_str = ", ".join([f"{class_names.get(k, f'class_{k}')}: {v}" for k, v in sorted(class_counts_before.items())])
+        logger.info(f"Original class distribution: {original_dist_str}")
+        
+        # Calculate and log class distribution after augmentation
+        augmented_dist_str = ", ".join([f"{class_names.get(k, f'class_{k}')}: {v}" for k, v in sorted(class_counts_after.items())])
+        logger.info(f"Augmented class distribution: {augmented_dist_str}")
+        
+        # Calculate added samples per class
+        added_counts = {k: class_counts_after.get(k, 0) - class_counts_before.get(k, 0) for k in set(class_counts_before) | set(class_counts_after)}
+        added_dist_str = ", ".join([f"{class_names.get(k, f'class_{k}')}: +{v}" for k, v in sorted(added_counts.items())])
+        logger.info(f"Added samples per class: {added_dist_str}")
+        
+        # Calculate class distribution percentages
+        original_total = sum(class_counts_before.values())
+        original_pct = {k: (v / original_total) * 100 for k, v in class_counts_before.items()}
+        original_pct_str = ", ".join([f"{class_names.get(k, f'class_{k}')}: {v:.1f}%" for k, v in sorted(original_pct.items())])
+        
+        augmented_total = sum(class_counts_after.values())
+        augmented_pct = {k: (v / augmented_total) * 100 for k, v in class_counts_after.items()}
+        augmented_pct_str = ", ".join([f"{class_names.get(k, f'class_{k}')}: {v:.1f}%" for k, v in sorted(augmented_pct.items())])
+        
+        logger.info(f"Original class percentages: {original_pct_str}")
+        logger.info(f"Augmented class percentages: {augmented_pct_str}")
+        
+        # Calculate augmentation factor per class
+        aug_factor = {k: class_counts_after.get(k, 0) / class_counts_before.get(k, 1) for k in class_counts_before}
+        aug_factor_str = ", ".join([f"{class_names.get(k, f'class_{k}')}: {v:.2f}x" for k, v in sorted(aug_factor.items())])
+        logger.info(f"Augmentation factor per class: {aug_factor_str}")
+    
+    def _calculate_max_aug_rounds(self, total_frames, num_frames):
+        """
+        Calculate the maximum number of augmentation rounds based on uniform sampling.
+        
+        Args:
+            total_frames: Total number of frames in the video
+            num_frames: Number of frames to sample per round
+            
+        Returns:
+            max_rounds: Maximum number of augmentation rounds
+        """
+        # Edge case: if num_frames is too large relative to total_frames,
+        # the chunks will be too small for meaningful augmentation
+        if num_frames > total_frames / 2:
+            # When requesting too many frames, limit augmentation rounds
+            return max(1, min(5, total_frames // (2 * num_frames) + 1))
+        
+        # For uniform sampling with original method:
+        if num_frames <= 1:
+            return 1  # No augmentation possible with only 1 frame
+        
+        # Calculate step using original formula
+        step = (total_frames - 1) / (num_frames - 1)
+        
+        # Find the minimum space between consecutive frames - this determines max rounds
+        min_chunk_size = max(1, int(step) - 1)  # At least 1 frame between borders
+        
+        # Each augmentation round uses one frame from each chunk
+        max_rounds = max(1, min_chunk_size)
+        
+        return max_rounds
+
+    def __len__(self):
+        """
+        Return the total length of the dataset including augmentations.
+        """
+        if self.augmentation_enabled:
+            return self.original_length + len(self.aug_video_map)
+        return len(self._path_to_videos)
+
     def __getitem__(self, index):
         """
         Given the video index, return the list of frames, label, and video
@@ -154,6 +310,14 @@ class Kinetics_sparse(torch.utils.data.Dataset):
         # When short cycle is used, input index is a tupple.
         if isinstance(index, tuple):
             index, short_cycle_idx = index
+
+        # Handle augmented indices - this is the key data augmentation part
+        aug_round = None
+        if self.augmentation_enabled and index >= self.original_length:
+            # This is an augmented sample
+            aug_idx = index - self.original_length
+            video_idx, aug_round = self.aug_video_map[aug_idx]
+            index = video_idx
 
         if self.mode in ["train"]:
             # -1 indicates random sampling.
@@ -195,16 +359,6 @@ class Kinetics_sparse(torch.utils.data.Dataset):
                 if self.cfg.TEST.NUM_SPATIAL_CROPS > 1
                 else 1
             )
-            # min_scale, max_scale, crop_size = (
-            #     [self.cfg.DATA.TEST_CROP_SIZE] * 3
-            #     if self.cfg.TEST.NUM_SPATIAL_CROPS > 1
-            #     else [self.cfg.DATA.TRAIN_JITTER_SCALES[0]] * 2
-            #     + [self.cfg.DATA.TEST_CROP_SIZE]
-            # )
-            # # The testing is deterministic and no jitter should be performed.
-            # # min_scale, max_scale, and crop_size are expect to be the same.
-            # assert len({min_scale, max_scale}) == 1
-
             min_scale, max_scale, crop_size = ([self.cfg.DATA.TEST_CROP_SIZE] * 3)
         else:
             raise NotImplementedError(
@@ -263,7 +417,8 @@ class Kinetics_sparse(torch.utils.data.Dataset):
                     max_spatial_scale=min_scale,
                     use_offset=self.cfg.DATA.USE_OFFSET_SAMPLING,
                     sparse=True,
-                    sampling_method=self.cfg.DATA.SAMPLING_METHOD if hasattr(self.cfg.DATA, "SAMPLING_METHOD") else "uniform"
+                    sampling_method=self.sampling_method,
+                    aug_round=aug_round  # Pass the augmentation round to decoder
                 )
 
             # If decoding failed (wrong format, video is too short, and etc),
@@ -281,27 +436,51 @@ class Kinetics_sparse(torch.utils.data.Dataset):
 
             # After successfully decoding frames
             # Save visualization for the first few videos in each epoch
-            if index < 3:  # Only visualize first 3 videos to avoid too many images
+            if index < 3 and self.mode == "train":  # Only visualize first 3 videos to avoid too many images
                 # Import the necessary modules
                 import os
-                from slowfast.utils.visualization import visualize_sampled_frames
+                import matplotlib.pyplot as plt
                 
                 # Create output directory if it doesn't exist
                 output_dir = os.path.join(os.path.dirname(self.cfg.OUTPUT_DIR), "sampled_frames")
+                os.makedirs(output_dir, exist_ok=True)
                 
                 # Convert frames to numpy for visualization
-                # No need to permute as visualization function will handle format conversion
                 frames_for_vis = frames[0].cpu().numpy() if isinstance(frames, list) else frames.cpu().numpy()
                 
-                # Call visualization function
+                # Visualize the frames
                 try:
-                    vis_path = visualize_sampled_frames(
-                        frames_for_vis,
-                        self._path_to_videos[index],
-                        output_dir,
-                        getattr(self.cfg.DATA, 'SAMPLING_METHOD', 'uniform')
-                    )
-                    logger.info(f"Visualized sampled frames for {self._path_to_videos[index]}: {vis_path}")
+                    # Create a figure with subplots for each frame
+                    fig, axes = plt.subplots(1, min(8, frames_for_vis.shape[0]), figsize=(20, 4))
+                    
+                    # If only one frame, wrap axes in a list
+                    if frames_for_vis.shape[0] == 1:
+                        axes = [axes]
+                    
+                    # Loop through frames and display each one
+                    for i, ax in enumerate(axes):
+                        if i < frames_for_vis.shape[0]:
+                            # Convert from channels-first to channels-last for display
+                            frame = frames_for_vis[i].transpose(1, 2, 0)
+                            
+                            # Normalize frame for display
+                            frame = (frame - frame.min()) / (frame.max() - frame.min())
+                            
+                            # Display the frame
+                            ax.imshow(frame)
+                            ax.set_title(f"Frame {i}")
+                            ax.axis('off')
+                    
+                    # Create filename with video info
+                    video_name = os.path.basename(self._path_to_videos[index])
+                    aug_info = f"_aug{aug_round}" if aug_round is not None else ""
+                    vis_path = os.path.join(output_dir, f"{video_name}_{self.sampling_method}{aug_info}.png")
+                    
+                    # Save the figure
+                    plt.tight_layout()
+                    plt.savefig(vis_path)
+                    plt.close(fig)
+                    logger.info(f"Visualized sampled frames: {vis_path}")
                 except Exception as e:
                     logger.error(f"Failed to visualize frames: {e}")
             
@@ -438,18 +617,3 @@ class Kinetics_sparse(torch.utils.data.Dataset):
     def _list_img_to_frames(self, img_list):
         img_list = [transforms.ToTensor()(img) for img in img_list]
         return torch.stack(img_list)
-
-    def __len__(self):
-        """
-        Returns:
-            (int): the number of videos in the dataset.
-        """
-        return self.num_videos
-
-    @property
-    def num_videos(self):
-        """
-        Returns:
-            (int): the number of videos in the dataset.
-        """
-        return len(self._path_to_videos)

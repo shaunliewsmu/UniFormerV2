@@ -672,6 +672,11 @@ _C.DATA.PATH_PREFIX_LIST = [""]
 # Add this line to the existing DATA section:
 _C.DATA.SAMPLING_METHOD = "uniform"  # Options: "uniform", "random", "random_window"
 
+_C.DATA.AUGMENTATION = CfgNode()
+_C.DATA.AUGMENTATION.ENABLE = False
+_C.DATA.AUGMENTATION.METHOD = "uniform"  # Options: "uniform", "random", "random_window"
+_C.DATA.AUGMENTATION.MAX_ROUNDS = None  # Maximum augmentation rounds per video (None for auto-calculate)
+
 # Label file path template.
 _C.DATA.LABEL_PATH_TEMPLATE = "somesomev1_rgb_{}_split.txt"
 
