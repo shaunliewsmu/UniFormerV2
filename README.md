@@ -245,9 +245,12 @@ bash exp/custom_referral/custom_b16_f8x224/train_aug.sh --augmentation_method ra
 
 ## Parameter Customization
 
-### Sampling Methods
+### Sampling Methods and Data Augmentation Theory
 
 you can find more details about the theory used for sampling methods and data augmentation from [here](https://github.com/mhleerepo/ai-laryngeal-video-based-classifier/blob/main/README_Techniques_Explaination.md)
+
+### Sampling Methods
+
 Available sampling methods:
 - **uniform**: Uniformly sample frames across video
 - **random**: Randomly sample frames
