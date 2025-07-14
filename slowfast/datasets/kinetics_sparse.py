@@ -294,6 +294,14 @@ class Kinetics_sparse(torch.utils.data.Dataset):
             return self.original_length + len(self.aug_video_map)
         return len(self._path_to_videos)
 
+    @property
+    def num_videos(self):
+        """
+        Returns:
+            (int): the number of videos in the dataset.
+        """
+        return len(self._path_to_videos)
+
     def __getitem__(self, index):
         """
         Given the video index, return the list of frames, label, and video
