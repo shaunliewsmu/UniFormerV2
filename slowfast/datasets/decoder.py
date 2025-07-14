@@ -70,7 +70,7 @@ def get_start_end_idx(
 
 
 # Add our new function for frame sampling methods
-def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', clip_idx=-1, num_clips=1, aug_round=None):
+def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', clip_idx=-1, num_clips=1, aug_round=None, aug_step_size=1):
     """
     Get frame indices based on sampling method, handling cases with fewer frames than requested.
     
@@ -141,14 +141,18 @@ def get_sampling_indices(total_frames, num_frames, sampling_method='uniform', cl
                 # For augmentation, we need to sample frames from each chunk
                 num_chunks = len(border_indices) - 1
                 round_frames = []
-                
-                # For each chunk, select one frame based on the augmentation round
+
+                # Apply the aug_step_size to the augmentation round
+                # This translates the augmentation round to an effective frame offset
+                effective_aug_round = aug_round * aug_step_size
+
+                # For each chunk, select one frame based on the augmentation round and step size
                 for i in range(num_chunks):
                     chunk_start = border_indices[i]     # Left border
                     chunk_end = border_indices[i + 1]   # Right border
                     
-                    # Calculate frame index for this round
-                    frame_idx = chunk_start + aug_round
+                    # Calculate frame index for this round with step size applied
+                    frame_idx = chunk_start + effective_aug_round
                     
                     # Ensure we stay within the chunk (excluding right border)
                     if frame_idx < chunk_end:

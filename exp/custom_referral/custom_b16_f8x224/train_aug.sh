@@ -9,6 +9,7 @@ SAMPLING_METHOD="random"
 # Data augmentation parameters
 AUGMENTATION_ENABLE=true
 AUGMENTATION_METHOD="random"
+AUG_STEP_SIZE=16  # Default step size for augmentation rounds
 # MAX_AUG_ROUNDS=5  # Set to your preferred number or leave unset for auto-calculation
 
 FOCAL_ALPHA=1.0  # Default focal loss alpha (can be overridden)
@@ -56,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       MAX_AUG_ROUNDS="$2"
       shift 2
       ;;
+    --aug_step_size)  
+      AUG_STEP_SIZE="$2"
+      shift 2
+      ;;
     *)
       # Unknown option
       shift
@@ -72,6 +77,7 @@ if [ "$AUGMENTATION_ENABLE" = true ]; then
   if [ -n "$MAX_AUG_ROUNDS" ]; then
     OUTPUT_DIR="${OUTPUT_DIR}_r${MAX_AUG_ROUNDS}"
   fi
+  OUTPUT_DIR="${OUTPUT_DIR}_step${AUG_STEP_SIZE}"  # Add step size to directory name
 fi
 
 echo "Running with focal loss parameters: alpha=${FOCAL_ALPHA}, gamma=${FOCAL_GAMMA}"
@@ -116,7 +122,8 @@ CMD="PYTHONPATH=$PYTHONPATH:./slowfast \
 if [ "$AUGMENTATION_ENABLE" = true ]; then
   CMD="$CMD \
   DATA.AUGMENTATION.ENABLE True \
-  DATA.AUGMENTATION.METHOD ${AUGMENTATION_METHOD}"
+  DATA.AUGMENTATION.METHOD ${AUGMENTATION_METHOD} \
+  DATA.AUGMENTATION.STEP_SIZE ${AUG_STEP_SIZE}"  # Add step size parameter
   
   if [ -n "$MAX_AUG_ROUNDS" ]; then
     CMD="$CMD \

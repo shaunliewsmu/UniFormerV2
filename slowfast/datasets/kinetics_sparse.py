@@ -93,7 +93,9 @@ class Kinetics_sparse(torch.utils.data.Dataset):
             logger.info("Data augmentation enabled for training")
             self.sampling_method = cfg.DATA.AUGMENTATION.METHOD
             self.max_aug_rounds = cfg.DATA.AUGMENTATION.MAX_ROUNDS
+            self.aug_step_size = cfg.DATA.AUGMENTATION.STEP_SIZE  # Get step size from config
             logger.info(f"Using sampling method: {self.sampling_method}")
+            logger.info(f"Using augmentation step size: {self.aug_step_size}")
             if self.max_aug_rounds:
                 logger.info(f"Maximum augmentation rounds: {self.max_aug_rounds}")
             else:
@@ -279,7 +281,8 @@ class Kinetics_sparse(torch.utils.data.Dataset):
         min_chunk_size = max(1, int(step) - 1)  # At least 1 frame between borders
         
         # Each augmentation round uses one frame from each chunk
-        max_rounds = max(1, min_chunk_size)
+        # Divide by step size to get the effective number of rounds
+        max_rounds = max(1, min_chunk_size // self.aug_step_size)
         
         return max_rounds
 
@@ -418,7 +421,7 @@ class Kinetics_sparse(torch.utils.data.Dataset):
                     use_offset=self.cfg.DATA.USE_OFFSET_SAMPLING,
                     sparse=True,
                     sampling_method=self.sampling_method,
-                    aug_round=aug_round  # Pass the augmentation round to decoder
+                    aug_round=aug_round
                 )
 
             # If decoding failed (wrong format, video is too short, and etc),

@@ -676,6 +676,7 @@ _C.DATA.AUGMENTATION = CfgNode()
 _C.DATA.AUGMENTATION.ENABLE = False
 _C.DATA.AUGMENTATION.METHOD = "uniform"  # Options: "uniform", "random", "random_window"
 _C.DATA.AUGMENTATION.MAX_ROUNDS = None  # Maximum augmentation rounds per video (None for auto-calculate)
+_C.DATA.AUGMENTATION.STEP_SIZE = 1  # Step size for augmentation rounds (default is 1)
 
 # Label file path template.
 _C.DATA.LABEL_PATH_TEMPLATE = "somesomev1_rgb_{}_split.txt"

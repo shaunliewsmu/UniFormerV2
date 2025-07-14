@@ -1,6 +1,0 @@
-Top-1 Accuracy: 65.0
-F1 Score: 0.7879
-ROC-AUC Score: 0.6044
-Confusion Matrix:
-[[ 0  7]
- [ 0 13]]
